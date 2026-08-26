@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from aiperf.common.enums import CreditPhase
+from aiperf.common.environment import Environment
 from aiperf.credit.callback_handler import CreditCallbackHandler
 from aiperf.credit.messages import CreditReturn, FirstToken
 from aiperf.credit.structs import Credit
@@ -1399,6 +1400,115 @@ class TestWarmupEarlyAbort:
 
         warmup_strategy.record_warmup_failure.assert_called_once()
         assert handler._warmup_abort_triggered is False
+
+
+class TestWarmupFailureTolerance:
+    """AIPERF_AGENTX_TOLERATE_WARMUP_FAILURES suppresses warmup-failure handling.
+
+    The env var is an escape hatch: when set, a terminal WARMUP root failure that
+    would normally be recorded (and, when wired, live-abort the run) is neither
+    recorded nor aborted, and the trigger flag stays down so the teardown backstop
+    also stays silent -- PROFILING proceeds on the surviving trajectory pool. The
+    default (unset -> False) keeps the strict one-strike policy exercised by
+    TestWarmupFailureRecording / TestWarmupEarlyAbort.
+    """
+
+    @pytest.fixture
+    def abort_cb(self):
+        return AsyncMock()
+
+    @pytest.fixture
+    def warmup_strategy(self):
+        mock = MagicMock()
+        mock.handle_credit_return = AsyncMock()
+        mock.record_warmup_failure = MagicMock()
+        return mock
+
+    @pytest.fixture
+    def tolerant_handler(
+        self,
+        mock_concurrency,
+        mock_progress,
+        mock_lifecycle,
+        mock_stop_checker,
+        warmup_strategy,
+        abort_cb,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(Environment.AGENTX, "TOLERATE_WARMUP_FAILURES", True)
+        handler = CreditCallbackHandler(mock_concurrency, on_warmup_abort=abort_cb)
+        handler.register_phase(
+            phase=CreditPhase.WARMUP,
+            progress=mock_progress,
+            lifecycle=mock_lifecycle,
+            stop_checker=mock_stop_checker,
+            strategy=warmup_strategy,
+        )
+        return handler
+
+    async def test_tolerated_warmup_error_neither_records_nor_aborts(
+        self, tolerant_handler, warmup_strategy, abort_cb
+    ):
+        """With the flag set, a terminal WARMUP error is fully ignored: no strategy
+        record, no live abort, and the trigger flag stays down so the teardown
+        backstop stays silent too."""
+        credit = make_credit(turn_index=0, num_turns=3, phase=CreditPhase.WARMUP)
+        credit_return = CreditReturn(
+            credit=credit, cancelled=False, first_token_sent=False, error="server 500"
+        )
+
+        await tolerant_handler.on_credit_return("worker-1", credit_return)
+
+        warmup_strategy.record_warmup_failure.assert_not_called()
+        abort_cb.assert_not_awaited()
+        assert tolerant_handler._warmup_abort_triggered is False
+
+    async def test_tolerated_warmup_cancellation_neither_records_nor_aborts(
+        self, tolerant_handler, warmup_strategy, abort_cb
+    ):
+        """A cancellation is tolerated identically to an error."""
+        credit = make_credit(turn_index=1, num_turns=4, phase=CreditPhase.WARMUP)
+        credit_return = make_credit_return(
+            credit, cancelled=True, first_token_sent=False
+        )
+
+        await tolerant_handler.on_credit_return("worker-1", credit_return)
+
+        warmup_strategy.record_warmup_failure.assert_not_called()
+        abort_cb.assert_not_awaited()
+
+    async def test_default_unset_still_records_and_aborts(
+        self,
+        mock_concurrency,
+        mock_progress,
+        mock_lifecycle,
+        mock_stop_checker,
+        warmup_strategy,
+        abort_cb,
+    ):
+        """Control: with the flag at its default (False), the SAME failure records
+        and live-aborts -- proving the tolerance tests exercise the flag, not a
+        broken setup."""
+        assert Environment.AGENTX.TOLERATE_WARMUP_FAILURES is False
+        handler = CreditCallbackHandler(mock_concurrency, on_warmup_abort=abort_cb)
+        handler.register_phase(
+            phase=CreditPhase.WARMUP,
+            progress=mock_progress,
+            lifecycle=mock_lifecycle,
+            stop_checker=mock_stop_checker,
+            strategy=warmup_strategy,
+        )
+        credit = make_credit(turn_index=0, num_turns=3, phase=CreditPhase.WARMUP)
+        credit_return = CreditReturn(
+            credit=credit, cancelled=False, first_token_sent=False, error="server 500"
+        )
+
+        await handler.on_credit_return("worker-1", credit_return)
+
+        warmup_strategy.record_warmup_failure.assert_called_once_with(
+            credit.conversation_id
+        )
+        abort_cb.assert_awaited_once()
 
 
 async def test_no_request_return_skips_prefill_counter(

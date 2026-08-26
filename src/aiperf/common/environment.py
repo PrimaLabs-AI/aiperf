@@ -167,6 +167,17 @@ class _AgentXSettings(BaseSettings):
         "deliveries are near-immediate in practice, so the default window is far "
         "larger than any real gap; raise it for very high concurrency.",
     )
+    TOLERATE_WARMUP_FAILURES: bool = Field(
+        default=False,
+        description="When True, terminal WARMUP failures (errors or cancellations "
+        "on a trajectory's warmup credit) no longer abort the run: AgenticReplay's "
+        "live early-abort and the teardown backstop are both suppressed and "
+        "PROFILING proceeds on the surviving trajectory pool. Default False keeps "
+        "the strict one-strike policy (a degraded pool must not silently bias "
+        "steady-state metrics). Set AIPERF_AGENTX_TOLERATE_WARMUP_FAILURES=1 as an "
+        "escape hatch to get a run to complete while a warmup failure is diagnosed "
+        "separately; results from such a run are not warmup-clean.",
+    )
 
 
 class _APIServerSettings(BaseSettings):
