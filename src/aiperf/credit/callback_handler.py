@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from aiperf.common.aiperf_logger import AIPerfLogger
 from aiperf.common.enums import CreditPhase
+from aiperf.common.environment import Environment
 from aiperf.common.scenario.context_overflow import is_context_overflow_response
 from aiperf.timing.concurrency import PhaseRuntimeKey
 
@@ -294,6 +295,11 @@ class CreditCallbackHandler:
         shutdown. Fired at most once; on broadcast failure the trigger flag resets
         so a later return retries and the teardown backstop can still surface it.
         """
+        if Environment.AGENTX.TOLERATE_WARMUP_FAILURES:
+            # Escape hatch: neither accumulate nor live-abort, so the teardown
+            # backstop (which raises only on accumulated failures) also stays
+            # silent and PROFILING proceeds on the surviving trajectory pool.
+            return
         if not (
             phase == CreditPhase.WARMUP
             and credit.agent_depth == 0
