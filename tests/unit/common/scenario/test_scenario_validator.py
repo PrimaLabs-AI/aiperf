@@ -201,6 +201,24 @@ def test_explicit_ignore_eos_false_raises() -> None:
     run = _build_run(streaming=True, extra={"ignore_eos": False})
     with pytest.raises(ScenarioLockError):
         apply_scenario(run)
+    # No override: the operator's config is left untouched by the failed lock.
+    assert run.cfg.endpoint.extra["ignore_eos"] is False
+
+
+@pytest.mark.parametrize("falsy", [False, "false", 0, "no"])
+def test_explicit_ignore_eos_false_under_override_omits_key_from_wire(falsy) -> None:
+    """Strict OpenAI-compatible providers 400 on *any* ignore_eos value, so the
+    opt-out must remove the key rather than send ``ignore_eos: false``."""
+    run = _build_run(
+        streaming=True,
+        unsafe_override=True,
+        extra={"ignore_eos": falsy, "temperature": 0},
+    )
+    outcome = apply_scenario(run)
+    assert outcome.submission_valid is False
+    assert any(v.flag == "extra_inputs.ignore_eos" for v in outcome.violations)
+    assert "ignore_eos" not in run.cfg.endpoint.extra
+    assert run.cfg.endpoint.extra["temperature"] == 0  # other extras untouched
 
 
 def test_ignore_trace_delays_raises() -> None:
