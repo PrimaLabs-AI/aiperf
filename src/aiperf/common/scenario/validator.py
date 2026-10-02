@@ -275,6 +275,14 @@ def _apply_require_ignore_eos(
     ``EndpointConfig.extra`` (a dict merged into every request body by the
     endpoint formatters). Auto-injects when absent; raises when explicitly
     falsy.
+
+    An explicit falsy value is the operator's opt-out for providers that
+    reject the vendor field outright (strict OpenAI-compatible APIs answer
+    ``400 unrecognized request argument supplied: ignore_eos`` to *any*
+    value, including ``false``). It is still a scenario violation, so it only
+    survives under ``--unsafe-override``; when it does, the key is removed
+    from ``extra`` so nothing is sent on the wire rather than a literal
+    ``"ignore_eos": false`` the same provider would reject.
     """
     if not spec.require_ignore_eos:
         return
@@ -296,6 +304,18 @@ def _apply_require_ignore_eos(
                 message=f"scenario {spec.name!r} requires ignore_eos=true",
             )
         )
+        # Opt-out: under --unsafe-override, drop the key so the request body
+        # carries no ignore_eos at all. Without the override the violation
+        # above raises, and the config is left exactly as the operator wrote it.
+        if bool(getattr(run.cfg, "unsafe_override", False)):
+            del extra["ignore_eos"]
+            _logger.warning(
+                "Scenario %r: extra_inputs.ignore_eos=%r is an explicit opt-out; "
+                "omitting ignore_eos from the request body (responses end at the "
+                "model's natural EOS, so OSL will not match the trace).",
+                spec.name,
+                ignore_eos,
+            )
     else:
         applied.append("ignore_eos")
 
