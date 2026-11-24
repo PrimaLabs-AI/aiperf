@@ -299,3 +299,68 @@ class TestHighCPUWarning:
         assert worker_info.health.memory_usage == DEFAULT_MEMORY * 2
         assert worker_info.task_stats.total == 20
         assert worker_info.task_stats.completed == 15
+
+
+class TestStaleWorkerLogging:
+    """A worker that stops reporting while it holds requests is logged as it goes stale."""
+
+    @pytest.fixture
+    def silent_for(self, worker_info: WorkerStatusInfo):
+        def make(seconds: float) -> WorkerStatusInfo:
+            worker_info.last_update_ns = time.time_ns() - int(seconds * 1e9)
+            return worker_info
+
+        return make
+
+    async def test_stale_worker_with_requests_in_progress_logs_an_error_once(
+        self, worker_manager: WorkerManager, silent_for
+    ):
+        info = silent_for(Environment.WORKER.STALE_TIME + 5)
+        worker_manager.worker_infos[WORKER_ID] = info
+        worker_manager.error = MagicMock()
+
+        await worker_manager._worker_status_loop()
+        await worker_manager._worker_status_loop()
+
+        assert info.status == WorkerStatus.STALE
+        worker_manager.error.assert_called_once()
+        message = worker_manager.error.call_args[0][0]
+        assert WORKER_ID in message
+        assert "5 requests in progress" in message
+
+    async def test_stale_idle_worker_is_not_an_error(
+        self, worker_manager: WorkerManager, silent_for
+    ):
+        info = silent_for(Environment.WORKER.STALE_TIME + 5)
+        info.task_stats = WorkerTaskStats(total=10, completed=10, failed=0)
+        worker_manager.worker_infos[WORKER_ID] = info
+        worker_manager.error = MagicMock()
+
+        await worker_manager._worker_status_loop()
+
+        assert info.status == WorkerStatus.STALE
+        worker_manager.error.assert_not_called()
+
+    async def test_reporting_worker_is_not_stale(
+        self, worker_manager: WorkerManager, silent_for
+    ):
+        info = silent_for(Environment.WORKER.STALE_TIME - 1)
+        worker_manager.worker_infos[WORKER_ID] = info
+        worker_manager.error = MagicMock()
+
+        await worker_manager._worker_status_loop()
+
+        assert info.status == WorkerStatus.HEALTHY
+        worker_manager.error.assert_not_called()
+
+    def test_stale_worker_reporting_again_logs_a_warning(
+        self, worker_manager: WorkerManager, silent_for
+    ):
+        info = silent_for(Environment.WORKER.STALE_TIME + 30)
+        info.status = WorkerStatus.STALE
+
+        worker_manager._update_worker_status(info, create_health_message())
+
+        assert info.status != WorkerStatus.STALE
+        worker_manager.warning.assert_called_once()
+        assert "reporting again" in worker_manager.warning.call_args[0][0]
