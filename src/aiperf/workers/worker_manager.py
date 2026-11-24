@@ -142,6 +142,11 @@ class WorkerManager(BaseComponentService):
         self, info: WorkerStatusInfo, message: WorkerHealthMessage
     ) -> None:
         """Check the status of a worker."""
+        if info.status == WorkerStatus.STALE:
+            silent_s = (time.time_ns() - (info.last_update_ns or 0)) / NANOS_PER_SECOND
+            self.warning(
+                f"Worker {info.worker_id} is reporting again after {silent_s:.0f}s of silence."
+            )
         info.last_update_ns = time.time_ns()
         # Error Status
         if message.task_stats.failed > info.task_stats.failed:
@@ -173,12 +178,31 @@ class WorkerManager(BaseComponentService):
 
     @background_task(immediate=False, interval=Environment.WORKER.CHECK_INTERVAL)
     async def _worker_status_loop(self) -> None:
-        """Check the status of all workers."""
+        """Check the status of all workers.
+
+        A worker that stops reporting while it holds requests is logged once, as it goes
+        stale: a frozen worker process (e.g. on a host short of memory) returns none of
+        its requests, they are neither completed nor counted as errors, and its share of
+        the concurrency is lost until the phase times out. Without this line the only
+        trace is "Released stuck slots" at teardown.
+        """
         self.debug("Checking worker status")
 
-        for _, info in self.worker_infos.items():
-            if (time.time_ns() - (info.last_update_ns or 0)) / NANOS_PER_SECOND > Environment.WORKER.STALE_TIME:  # fmt: skip
-                info.status = WorkerStatus.STALE
+        now_ns = time.time_ns()
+        for worker_id, info in self.worker_infos.items():
+            silent_s = (now_ns - (info.last_update_ns or 0)) / NANOS_PER_SECOND
+            if silent_s <= Environment.WORKER.STALE_TIME:
+                continue
+            in_progress = info.task_stats.in_progress
+            if info.status != WorkerStatus.STALE and in_progress > 0:
+                self.error(
+                    f"Worker {worker_id} stopped reporting {silent_s:.0f}s ago with "
+                    f"{in_progress} requests in progress. If it does not recover, they "
+                    "never finish and are not counted as errors, so the results "
+                    "measure less load than the configured concurrency. A frozen "
+                    "worker process is often a host short of memory or CPU."
+                )
+            info.status = WorkerStatus.STALE
 
     @background_task(
         immediate=False, interval=Environment.WORKER.STATUS_SUMMARY_INTERVAL
