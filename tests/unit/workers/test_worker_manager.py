@@ -351,6 +351,39 @@ class TestWorkerMemoryReport:
         )
         assert "0 sessions" in worker_manager._worker_memory_summary()
 
+    def test_summary_excludes_stale_workers(
+        self, worker_manager: WorkerManager
+    ) -> None:
+        for worker_id, rss, status in (
+            ("live", 2 * 2**30, WorkerStatus.HEALTHY),
+            ("dead", 5 * 2**30, WorkerStatus.STALE),
+        ):
+            worker_manager.worker_infos[worker_id] = WorkerStatusInfo(
+                worker_id=worker_id,
+                last_update_ns=time.time_ns(),
+                status=status,
+                health=create_health_message(memory_usage=rss).health,
+                task_stats=WorkerTaskStats(),
+                session_stats=WorkerSessionStats(sessions=7),
+            )
+        summary = worker_manager._worker_memory_summary()
+        assert "1 workers (1 stale, not counted)" in summary
+        assert "RSS 2.00 GiB total" in summary
+        assert "largest 2.00 GiB (live)" in summary
+        assert "7 sessions" in summary
+
+    def test_summary_all_workers_stale(self, worker_manager: WorkerManager) -> None:
+        worker_manager.worker_infos[WORKER_ID] = WorkerStatusInfo(
+            worker_id=WORKER_ID,
+            last_update_ns=time.time_ns(),
+            status=WorkerStatus.STALE,
+            health=create_health_message().health,
+            task_stats=WorkerTaskStats(),
+        )
+        assert worker_manager._worker_memory_summary() == (
+            "Worker memory: 0 live workers (1 stale, not counted)"
+        )
+
     @pytest.mark.asyncio
     async def test_loop_logs_only_with_workers(
         self, worker_manager: WorkerManager

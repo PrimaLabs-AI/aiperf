@@ -210,7 +210,15 @@ class WorkerManager(BaseComponentService):
             self.info(self._worker_memory_summary())
 
     def _worker_memory_summary(self) -> str:
-        infos = list(self.worker_infos.values())
+        # A worker that died (e.g. OOM-killed) stays in worker_infos as STALE with its
+        # last health report; counting it would inflate the totals for the rest of the run.
+        infos = [
+            i for i in self.worker_infos.values() if i.status != WorkerStatus.STALE
+        ]
+        stale = len(self.worker_infos) - len(infos)
+        stale_note = f" ({stale} stale, not counted)" if stale else ""
+        if not infos:
+            return f"Worker memory: 0 live workers{stale_note}"
         biggest = max(infos, key=lambda i: i.health.memory_usage)
         reported = [i.session_stats for i in infos if i.session_stats is not None]
         total = WorkerSessionStats(
@@ -220,7 +228,7 @@ class WorkerManager(BaseComponentService):
             }
         )
         return (
-            f"Worker memory: {len(infos)} workers, RSS {_gib(sum(i.health.memory_usage for i in infos))} "
+            f"Worker memory: {len(infos)} workers{stale_note}, RSS {_gib(sum(i.health.memory_usage for i in infos))} "
             f"total, largest {_gib(biggest.health.memory_usage)} ({biggest.worker_id}). "
             f"Session caches: {total.sessions} sessions ({total.pinned_sessions} pinned for "
             f"FORK children, {total.pending_fork_sessions} of them past their last turn; "
