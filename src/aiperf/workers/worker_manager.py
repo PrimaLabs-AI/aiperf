@@ -18,6 +18,7 @@ from aiperf.common.messages.worker_messages import WorkerStatusSummaryMessage
 from aiperf.common.models import WorkerSessionStats
 from aiperf.common.models.progress_models import WorkerStats
 from aiperf.plugin.enums import ServiceType
+from aiperf.workers.session_manager import IDLE_SESSION_SECONDS
 
 if TYPE_CHECKING:
     from aiperf.config.resolution.plan import BenchmarkRun
@@ -232,14 +233,21 @@ class WorkerManager(BaseComponentService):
             f"total, largest {_gib(biggest.health.memory_usage)} ({biggest.worker_id}). "
             f"Session caches: {total.sessions} sessions ({total.pinned_sessions} pinned for "
             f"FORK children, {total.pending_fork_sessions} of them past their last turn; "
-            f"{total.idle_sessions} idle > 300 s), {total.conversations} conversations "
-            f"~{_gib(total.conversation_chars)} of prompt text, "
-            f"~{_gib(total.response_chars)} of responses"
+            f"{total.idle_sessions} idle > {IDLE_SESSION_SECONDS:.0f} s), "
+            f"{total.conversations} conversations with ~{_mchars(total.conversation_chars)} "
+            f"of prompt text, ~{_mchars(total.response_chars)} of responses "
+            "(character counts, not memory)"
         )
 
 
 def _gib(n: int) -> str:
     return f"{n / 2**30:.2f} GiB"
+
+
+def _mchars(n: int) -> str:
+    """Characters in millions. Python's in-memory size of the same content
+    (str objects, raw_messages dicts and lists) is several times larger."""
+    return f"{n / 1e6:.1f}M chars"
 
 
 def main() -> None:
