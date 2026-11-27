@@ -339,7 +339,11 @@ class TestWorkerMemoryReport:
         assert "40 sessions" in summary
         assert "4 pinned" in summary
         assert "2 of them past their last turn" in summary
-        assert "6 idle" in summary
+        assert "6 idle > 300 s" in summary
+        # 40 conversations x 2**20 chars, 2 workers x 2**20 response chars
+        assert "~41.9M chars of prompt text" in summary
+        assert "~2.1M chars of responses" in summary
+        assert "GiB of prompt" not in summary
 
     def test_summary_without_session_stats(self, worker_manager: WorkerManager) -> None:
         worker_manager.worker_infos[WORKER_ID] = WorkerStatusInfo(
