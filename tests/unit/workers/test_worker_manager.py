@@ -12,7 +12,7 @@ import pytest
 from aiperf.common.enums import WorkerStatus
 from aiperf.common.environment import Environment
 from aiperf.common.messages import WorkerHealthMessage
-from aiperf.common.models import ProcessHealth, WorkerTaskStats
+from aiperf.common.models import ProcessHealth, WorkerSessionStats, WorkerTaskStats
 from aiperf.config.flags.cli_config import CLIConfig
 from aiperf.workers.worker_manager import WorkerManager, WorkerStatusInfo
 from tests.unit.conftest import make_run_from_cli
@@ -299,3 +299,95 @@ class TestHighCPUWarning:
         assert worker_info.health.memory_usage == DEFAULT_MEMORY * 2
         assert worker_info.task_stats.total == 20
         assert worker_info.task_stats.completed == 15
+
+
+class TestWorkerMemoryReport:
+    """The WorkerManager's periodic one-line summary of worker memory."""
+
+    def test_summary_totals_workers_and_names_the_largest(
+        self, worker_manager: WorkerManager
+    ) -> None:
+        for worker_id, rss, sessions in (("w1", 2 * 2**30, 10), ("w2", 5 * 2**30, 30)):
+            message = create_health_message(memory_usage=rss)
+            message.service_id = worker_id
+            message.session_stats = WorkerSessionStats(
+                sessions=sessions,
+                pinned_sessions=2,
+                pending_fork_sessions=1,
+                idle_sessions=3,
+                conversations=sessions,
+                conversation_chars=sessions * 2**20,
+                response_chars=2**20,
+            )
+            worker_manager._update_worker_status(
+                worker_manager.worker_infos.setdefault(
+                    worker_id,
+                    WorkerStatusInfo(
+                        worker_id=worker_id,
+                        last_update_ns=time.time_ns(),
+                        status=WorkerStatus.HEALTHY,
+                        health=message.health,
+                        task_stats=message.task_stats,
+                    ),
+                ),
+                message,
+            )
+        summary = worker_manager._worker_memory_summary()
+        assert "2 workers" in summary
+        assert "RSS 7.00 GiB total" in summary
+        assert "largest 5.00 GiB (w2)" in summary
+        assert "40 sessions" in summary
+        assert "4 pinned" in summary
+        assert "2 of them past their last turn" in summary
+        assert "6 idle" in summary
+
+    def test_summary_without_session_stats(self, worker_manager: WorkerManager) -> None:
+        worker_manager.worker_infos[WORKER_ID] = WorkerStatusInfo(
+            worker_id=WORKER_ID,
+            last_update_ns=time.time_ns(),
+            status=WorkerStatus.HEALTHY,
+            health=create_health_message().health,
+            task_stats=WorkerTaskStats(),
+        )
+        assert "0 sessions" in worker_manager._worker_memory_summary()
+
+    def test_summary_excludes_stale_workers(
+        self, worker_manager: WorkerManager
+    ) -> None:
+        for worker_id, rss, status in (
+            ("live", 2 * 2**30, WorkerStatus.HEALTHY),
+            ("dead", 5 * 2**30, WorkerStatus.STALE),
+        ):
+            worker_manager.worker_infos[worker_id] = WorkerStatusInfo(
+                worker_id=worker_id,
+                last_update_ns=time.time_ns(),
+                status=status,
+                health=create_health_message(memory_usage=rss).health,
+                task_stats=WorkerTaskStats(),
+                session_stats=WorkerSessionStats(sessions=7),
+            )
+        summary = worker_manager._worker_memory_summary()
+        assert "1 workers (1 stale, not counted)" in summary
+        assert "RSS 2.00 GiB total" in summary
+        assert "largest 2.00 GiB (live)" in summary
+        assert "7 sessions" in summary
+
+    def test_summary_all_workers_stale(self, worker_manager: WorkerManager) -> None:
+        worker_manager.worker_infos[WORKER_ID] = WorkerStatusInfo(
+            worker_id=WORKER_ID,
+            last_update_ns=time.time_ns(),
+            status=WorkerStatus.STALE,
+            health=create_health_message().health,
+            task_stats=WorkerTaskStats(),
+        )
+        assert worker_manager._worker_memory_summary() == (
+            "Worker memory: 0 live workers (1 stale, not counted)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_loop_logs_only_with_workers(
+        self, worker_manager: WorkerManager
+    ) -> None:
+        worker_manager.info = MagicMock()
+        await worker_manager._worker_memory_report_loop()
+        worker_manager.info.assert_not_called()

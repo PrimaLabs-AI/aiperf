@@ -3,11 +3,34 @@
 
 """User session management for multi-turn conversation optimization."""
 
+import time
+
+import orjson
 from pydantic import Field
 
 from aiperf.common.enums import ConversationBranchMode, ConversationContextMode
-from aiperf.common.models import AIPerfBaseModel
+from aiperf.common.models import AIPerfBaseModel, WorkerSessionStats
 from aiperf.common.models.dataset_models import Conversation, Turn
+
+IDLE_SESSION_SECONDS = 300.0
+"""A cached session untouched for this long counts as idle in ``stats()``."""
+
+
+def _turn_chars(turn: Turn) -> int:
+    """Approximate characters of prompt content a turn holds (texts and raw messages)."""
+    chars = sum(len(c) for text in turn.texts for c in text.contents)
+    if turn.raw_messages:
+        chars += len(orjson.dumps(turn.raw_messages))
+    return chars
+
+
+def _conversation_chars(conversation: Conversation) -> int:
+    """Approximate characters of prompt content a conversation holds."""
+    return (
+        sum(_turn_chars(t) for t in conversation.turns)
+        + len(conversation.system_message or "")
+        + len(conversation.user_context_message or "")
+    )
 
 
 def _compute_is_fork_parent(conversation: Conversation) -> bool:
@@ -96,6 +119,24 @@ class UserSession(AIPerfBaseModel):
         "the credit-return path AFTER this terminal eviction runs).",
     )
 
+    conversation_chars: int = Field(
+        default=0,
+        ge=0,
+        description="Approximate characters of prompt content in ``conversation``, "
+        "computed once at creation for memory diagnostics",
+    )
+    response_chars: int = Field(
+        default=0,
+        ge=0,
+        description="Approximate characters of assistant responses stored by "
+        "``store_response``, for memory diagnostics",
+    )
+    last_used: float = Field(
+        default_factory=lambda: time.monotonic(),
+        description="``time.monotonic()`` of the session's creation or last cache "
+        "lookup, for memory diagnostics",
+    )
+
     def advance_turn(self, turn_index: int) -> Turn:
         """Append the next turn onto ``turn_list`` and return it.
 
@@ -161,6 +202,7 @@ class UserSession(AIPerfBaseModel):
         Store the response for the turn.
         """
         self.turn_list.append(response_turn)
+        self.response_chars += _turn_chars(response_turn)
 
 
 class UserSessionManager:
@@ -265,6 +307,7 @@ class UserSessionManager:
             is_fork_parent=is_fork_parent,
             parent_correlation_id=parent_correlation_id,
             branch_mode=branch_mode if parent_correlation_id is not None else None,
+            conversation_chars=_conversation_chars(conversation),
         )
         self.store(x_correlation_id, user_session)
         return user_session
@@ -286,7 +329,38 @@ class UserSessionManager:
         Args:
             x_correlation_id: X-Correlation-ID header value
         """
-        return self._cache.get(x_correlation_id)
+        session = self._cache.get(x_correlation_id)
+        if session is not None:
+            session.last_used = time.monotonic()
+        return session
+
+    def stats(self) -> WorkerSessionStats:
+        """What the cache holds: sessions, FORK pins, idle sessions and approximate content size.
+
+        Each distinct ``Conversation`` object is counted once, since FORK children and
+        sessions resumed from the same trace can share one.
+        """
+        now = time.monotonic()
+        conversation_chars: dict[int, int] = {}
+        pinned = pending_fork = idle = response_chars = 0
+        for session in self._cache.values():
+            conversation_chars[id(session.conversation)] = session.conversation_chars
+            response_chars += session.response_chars
+            if session.fork_refcount > 0 or session.pending_fork_eviction:
+                pinned += 1
+            if session.pending_fork_eviction:
+                pending_fork += 1
+            if now - session.last_used > IDLE_SESSION_SECONDS:
+                idle += 1
+        return WorkerSessionStats(
+            sessions=len(self._cache),
+            pinned_sessions=pinned,
+            pending_fork_sessions=pending_fork,
+            idle_sessions=idle,
+            conversations=len(conversation_chars),
+            conversation_chars=sum(conversation_chars.values()),
+            response_chars=response_chars,
+        )
 
     def evict(self, x_correlation_id: str) -> None:
         """

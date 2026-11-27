@@ -1662,6 +1662,13 @@ class _WorkerSettings(BaseSettings):
         default=5.0,
         description="Time in seconds from last high load before worker is considered recovered",
     )
+    MEMORY_REPORT_INTERVAL: float = Field(
+        ge=1.0,
+        le=100000.0,
+        default=30.0,
+        description="Interval in seconds between WorkerManager log lines summarizing worker "
+        "memory: RSS and what the multi-turn session caches hold",
+    )
     MAX_WORKERS_CAP: int = Field(
         ge=1,
         le=10000,

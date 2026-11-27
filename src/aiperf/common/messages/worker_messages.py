@@ -5,7 +5,7 @@ from pydantic import Field
 
 from aiperf.common.enums import MessageType, WorkerStatus
 from aiperf.common.messages.service_messages import BaseServiceMessage
-from aiperf.common.models import ProcessHealth, WorkerTaskStats
+from aiperf.common.models import ProcessHealth, WorkerSessionStats, WorkerTaskStats
 from aiperf.common.types import MessageTypeT
 
 
@@ -20,6 +20,10 @@ class WorkerHealthMessage(BaseServiceMessage):
     task_stats: WorkerTaskStats = Field(
         ...,
         description="Stats for the tasks that have been sent to the worker",
+    )
+    session_stats: WorkerSessionStats | None = Field(
+        default=None,
+        description="What the worker's multi-turn session cache holds, for memory diagnostics",
     )
 
     @property
