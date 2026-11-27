@@ -758,6 +758,7 @@ class Worker(BaseComponentService, ProcessHealthMixin):
             service_id=self.service_id,
             health=health,
             task_stats=self.task_stats,
+            session_stats=self.session_manager.stats(),
         )
 
     async def _on_credit_message(self, message: RouterToWorkerMessage) -> None:

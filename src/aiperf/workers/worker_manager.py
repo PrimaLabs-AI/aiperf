@@ -15,6 +15,7 @@ from aiperf.common.environment import Environment
 from aiperf.common.hooks import background_task, on_message, on_start
 from aiperf.common.messages import SpawnWorkersCommand, WorkerHealthMessage
 from aiperf.common.messages.worker_messages import WorkerStatusSummaryMessage
+from aiperf.common.models import WorkerSessionStats
 from aiperf.common.models.progress_models import WorkerStats
 from aiperf.plugin.enums import ServiceType
 
@@ -33,6 +34,10 @@ class WorkerStatusInfo(WorkerStats):
     last_high_load_ns: int | None = Field(
         default=None,
         description="The last time the worker was in high load",
+    )
+    session_stats: WorkerSessionStats | None = Field(
+        default=None,
+        description="The worker's last reported session cache contents",
     )
 
 
@@ -73,7 +78,9 @@ class WorkerManager(BaseComponentService):
                 ),
             )
             self.debug(
-                lambda: f"Auto-setting max workers to {self.max_workers} due to no max workers specified."
+                lambda: (
+                    f"Auto-setting max workers to {self.max_workers} due to no max workers specified."
+                )
             )
 
         # Cap the worker count to the max concurrency, but only if the user is in concurrency mode.
@@ -170,6 +177,7 @@ class WorkerManager(BaseComponentService):
 
         info.health = message.health
         info.task_stats = message.task_stats
+        info.session_stats = message.session_stats
 
     @background_task(immediate=False, interval=Environment.WORKER.CHECK_INTERVAL)
     async def _worker_status_loop(self) -> None:
@@ -192,6 +200,38 @@ class WorkerManager(BaseComponentService):
             },
         )
         await self.publish(summary)
+
+    @background_task(
+        immediate=False, interval=Environment.WORKER.MEMORY_REPORT_INTERVAL
+    )
+    async def _worker_memory_report_loop(self) -> None:
+        """Log one line on worker memory, so a worker that runs out of it is explained."""
+        if self.worker_infos:
+            self.info(self._worker_memory_summary())
+
+    def _worker_memory_summary(self) -> str:
+        infos = list(self.worker_infos.values())
+        biggest = max(infos, key=lambda i: i.health.memory_usage)
+        reported = [i.session_stats for i in infos if i.session_stats is not None]
+        total = WorkerSessionStats(
+            **{
+                name: sum(getattr(s, name) for s in reported)
+                for name in WorkerSessionStats.model_fields
+            }
+        )
+        return (
+            f"Worker memory: {len(infos)} workers, RSS {_gib(sum(i.health.memory_usage for i in infos))} "
+            f"total, largest {_gib(biggest.health.memory_usage)} ({biggest.worker_id}). "
+            f"Session caches: {total.sessions} sessions ({total.pinned_sessions} pinned for "
+            f"FORK children, {total.pending_fork_sessions} of them past their last turn; "
+            f"{total.idle_sessions} idle > 300 s), {total.conversations} conversations "
+            f"~{_gib(total.conversation_chars)} of prompt text, "
+            f"~{_gib(total.response_chars)} of responses"
+        )
+
+
+def _gib(n: int) -> str:
+    return f"{n / 2**30:.2f} GiB"
 
 
 def main() -> None:

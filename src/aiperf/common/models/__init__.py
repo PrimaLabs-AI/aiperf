@@ -150,7 +150,7 @@ from aiperf.common.models.trace_models import (
     TraceDataExport,
 )
 from aiperf.common.models.usage_models import Usage
-from aiperf.common.models.worker_models import WorkerTaskStats
+from aiperf.common.models.worker_models import WorkerSessionStats, WorkerTaskStats
 
 __all__ = [
     "AIPerfBaseModel",
@@ -279,5 +279,6 @@ __all__ = [
     "VideoResponseData",
     "WorkerProcessingStats",
     "WorkerStats",
+    "WorkerSessionStats",
     "WorkerTaskStats",
 ]
